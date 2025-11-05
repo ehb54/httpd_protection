@@ -30,7 +30,7 @@ filter   = apache-us3-queryspam
 logpath  = /var/log/httpd/*access_log
 maxretry = 3
 findtime = 10m
-bantime  = 12h
+bantime  = 48h
 
 # ---------- Stock Apache jails ----------
 [apache-badbots]

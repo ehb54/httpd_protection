@@ -20,7 +20,7 @@ my %SYSTEM_DIR = (
     'fail2ban_filter' => '/etc/fail2ban/filter.d',
     'fail2ban_jaild' => '/etc/fail2ban/jail.d',
     'httpd_confd'   => '/etc/httpd/conf.d',
-    'sbin'      => '/usr/local/sbin',
+    'sbin'      => '/usr/sbin',
     );
 
 # health monitor (cron) settings
@@ -34,12 +34,12 @@ my $HEALTH_INSTALLED  = 'apache-health';   # installed file name
 # -----------------------------
 my ($opt_help, $opt_install, $opt_health, $opt_status, $opt_update_repo, $opt_update_system);
 GetOptions(
-    'help'      => \$opt_help,
-    'install'     => \$opt_install,
-    'health-monitor=s'=> \$opt_health,   # on|off
-    'status'     => \$opt_status,
-    'update-repo'   => \$opt_update_repo, # copy system -> repo for modified files
-    'update-system'  => \$opt_update_system, # copy repo -> system for modified files
+    'help'             => \$opt_help,
+    'install'          => \$opt_install,
+    'health-monitor=s' => \$opt_health,   # on|off
+    'status'           => \$opt_status,
+    'update-repo'      => \$opt_update_repo, # copy system -> repo for modified files
+    'update-system'    => \$opt_update_system, # copy repo -> system for modified files
     ) or die usage();
 
 # Default action
@@ -122,8 +122,8 @@ Assumptions:
     files/fail2ban/filter.d/*.conf -> /etc/fail2ban/filter.d/
     files/fail2ban/jail.d/99-hardening.local -> /etc/fail2ban/jail.d/
     files/httpd/conf.d/hardening.conf -> /etc/httpd/conf.d/
-    files/sbin/apache-health -> /usr/local/sbin/apache-health
-    files/sbin/list_bans -> /usr/local/sbin/list_bans
+    files/sbin/apache-health -> /usr/sbin/apache-health
+    files/sbin/list_bans -> /usr/sbin/list_bans
 USAGE
 }
 
@@ -262,7 +262,7 @@ sub do_health_monitor {
         my $cron = <<"CRON";
 # Managed by httpd_protection 'hardening' tool
 SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PATH=/usr/sbin:/usr/local/bin:/usr/bin:/sbin:/bin
 
 $CRON_EVERY_MINUTES * * * * root $health_path --quiet || true
 CRON

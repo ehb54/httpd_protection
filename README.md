@@ -98,7 +98,7 @@ sudo ./hardening --health-monitor on
 [OK] Created directory: /etc/fail2ban/filter.d
 [OK] Installed: /etc/fail2ban/filter.d/apache-sni-emptyhost.conf
 [OK] Installed: /etc/httpd/conf.d/hardening.conf
-[OK] Installed: /usr/local/sbin/apache-health
+[OK] Installed: /usr/sbin/apache-health
 [NOTE] Installation complete. Consider enabling the health monitor with:
   hardening --health-monitor on
 ```
