@@ -1,0 +1,63 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use JSON::PP; # Used to safely decode the list of IPs from fail2ban-client
+
+# --- Configuration ---
+my $F2B_CLIENT = '/usr/bin/fail2ban-client';
+# ---------------------
+
+# 1. Get the status output from fail2ban-client
+my $status_output = `$F2B_CLIENT status`;
+
+# 2. Extract the jail list line
+my ($jail_list_line) = $status_output =~ /^.+- Jail list:\s+(.+)/m;
+
+unless ($jail_list_line) {
+    die "ERROR: Could not find the 'Jail list' in fail2ban status output. Is Fail2ban running?\n";
+}
+
+# 3. Clean and split the jail names
+#    - Remove all whitespace (tr -d ' ')
+#    - Split by comma (,)
+my @jails = split(/,/, $jail_list_line);
+
+print "\n--- Fail2ban Ban Report ---\n";
+print "Format: Jail Name      : Ban Count : Banned IP List\n";
+print "----------------------------------------------------------------\n";
+
+# 4. Loop through each jail name and get the banned IPs
+foreach my $jail (@jails) {
+    # Remove leading/trailing spaces and newlines
+    $jail =~ s/^\s+|\s+$//g;
+    
+    # Skip empty strings resulting from bad splitting
+    next unless length $jail;
+
+    # Execute the command to get banned IPs for the current jail
+    my $banned_ips_raw = `$F2B_CLIENT get $jail banned`;
+    
+    # The output is a Python list string (e.g., "['1.2.3.4', '5.6.7.8']"). 
+    # We must convert this to valid JSON for safe parsing.
+    $banned_ips_raw =~ s/'/"/g; # Replace single quotes with double quotes
+    
+    my @banned_list;
+    my $ban_count = 0;
+    
+    # Attempt to decode the JSON-like string
+    if (my $decoded = eval { decode_json($banned_ips_raw) }) {
+        if (ref $decoded eq 'ARRAY') {
+            @banned_list = @$decoded;
+            $ban_count = scalar @banned_list;
+        }
+    }
+
+    # Format the final output line
+    my $list_string = join(', ', @banned_list);
+    
+    # Print in the desired format
+    printf "%-22s : %-10s : %s\n", $jail, $ban_count, $list_string;
+}
+
+print "----------------------------------------------------------------\n";
+print "--- End of Report ---\n";

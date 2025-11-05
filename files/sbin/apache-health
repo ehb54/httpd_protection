@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+ts=$(date +'%F %T')
+echo "[$ts] httpd:$(systemctl is-active httpd) php-fpm:$(systemctl is-active php-fpm)" >> /var/log/httpd/health.log
+curl -sS --max-time 2 http://127.0.0.1/server-status?auto | \
+  egrep 'BusyWorkers|IdleWorkers|Scoreboard' >> /var/log/httpd/health.log || echo "[$ts] server-status ERR" >> /var/log/httpd/health.log
+echo "----" >> /var/log/httpd/health.log
