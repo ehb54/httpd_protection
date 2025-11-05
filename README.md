@@ -24,7 +24,7 @@ httpd_protection/
 │   │   └── conf.d/
 │   │       └── hardening.conf
 │   └── sbin/
-│       ├── apache-health-sample.sh
+│       ├── apache-health
 │       └── list_bans
 └── roles/                 # (Reserved for future Ansible automation)
 ```
