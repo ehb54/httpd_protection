@@ -32,6 +32,14 @@ maxretry = 3
 findtime = 10m
 bantime  = 48h
 
+[apache-weird-http]
+enabled  = true
+filter   = apache-weird-http
+logpath  = /var/log/httpd/access_log
+maxretry = 3
+findtime = 5m
+bantime  = 12h
+
 [apache-wp-login]
 enabled  = true
 filter   = apache-wp-login
