@@ -1,0 +1,291 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use Getopt::Long;
+
+# =======================
+# Defaults / configuration
+# =======================
+
+my $FAIL2BAN_HOME     = $ENV{FAIL2BAN_HOME}     // '/etc/fail2ban';
+my $JAIL_FILE         = $ENV{JAIL_FILE}         // 'jail.d/99-hardening.local';
+my $WAIT_TIME_SECONDS = $ENV{WAIT_TIME_SECONDS} // 120;
+
+my $run          = 0;
+my $wait_override;
+my $help         = 0;
+
+GetOptions(
+    'run|r'          => \$run,
+    'wait-seconds=i' => \$wait_override,
+    'help|h'         => \$help,
+) or die "Error in command line arguments. Use --help for usage.\n";
+
+if ( $help ) {
+    print <<"USAGE";
+Usage: $0 [--run] [--wait-seconds N]
+
+This script:
+  * Gets the active jail list from 'fail2ban-client status'
+  * For each jail:
+      - Reads current maxretry
+      - Sets maxretry to 0
+  * Reloads all processed jails
+  * Waits N seconds (default 120)
+  * Restores original maxretry for each processed jail
+  * Reloads each jail again after restoring its original maxretry
+
+Options:
+  --run, -r             Run, dry run if not specified
+  --wait-seconds N      Override wait time (default $WAIT_TIME_SECONDS)
+  --help, -h            Show this help
+
+Environment:
+  FAIL2BAN_HOME         Default: $FAIL2BAN_HOME
+  JAIL_FILE             Default: $JAIL_FILE
+  WAIT_TIME_SECONDS     Default: $WAIT_TIME_SECONDS
+USAGE
+    exit 0;
+}
+
+$WAIT_TIME_SECONDS = $wait_override if defined $wait_override;
+
+# ==============
+# Helper routines
+# ==============
+
+sub run_cmd {
+    my ( $cmd, %opts ) = @_;
+    my $quiet     = $opts{quiet}     // 0;
+    my $label     = $opts{label}     // '';
+    my $read_only = $opts{read_only} // 0;
+
+    print ">> $cmd\n" unless $quiet;
+
+    # In dry-run mode, allow *read_only* commands to actually run (status/get),
+    # but skip state-changing commands (set/reload).
+    if ( !$run && !$read_only ) {
+        print "   (dry-run, not executing)\n" unless $quiet;
+        return ( 0, '' );
+    }
+
+    my $output = qx{$cmd 2>&1};
+    my $rc     = $? >> 8;
+
+    if ( $rc != 0 && !$quiet ) {
+        my $prefix = $label ? "[$label] " : '';
+        warn "${prefix}Command failed with exit code $rc:\n  $cmd\n$output\n";
+    }
+
+    return ( $rc, $output );
+}
+
+sub trim {
+    my ($s) = @_;
+    return '' unless defined $s;
+    $s =~ s/^\s+//;
+    $s =~ s/\s+$//;
+    return $s;
+}
+
+# Parse the output of "fail2ban-client status" to get the active jail names
+sub get_active_jails {
+    my @jails;
+
+    my ( $rc, $status ) = run_cmd(
+        'fail2ban-client status',
+        label     => 'status',
+        read_only => 1,
+    );
+    die "fail2ban-client status failed, cannot continue\n" if $rc != 0;
+
+    my @lines = split /\n/, $status;
+
+    my $capture    = 0;
+    my $jail_chunk = '';
+
+    for my $line ( @lines ) {
+        # Typical: "Jail list: sshd, apache-auth"
+        if ( $line =~ /Jail\s+list\s*:\s*(.*)$/i ) {
+            $capture    = 1;
+            $jail_chunk = $1;
+            next;
+        }
+
+        # Some versions: "Jails: sshd, apache-auth"
+        if ( !$capture && $line =~ /Jails?\s*:\s*(.*)$/i ) {
+            $capture    = 1;
+            $jail_chunk = $1;
+            next;
+        }
+
+        # Multi-line continuation: "  postfix, dovecot"
+        if ( $capture ) {
+            if ( $line =~ /^\s*[\w\-,\s]+$/ ) {
+                $jail_chunk .= ' ' . $line;
+                next;
+            } else {
+                last; # done with the jail list
+            }
+        }
+    }
+
+    $jail_chunk = trim($jail_chunk);
+    die "Could not find 'Jail list' or 'Jails' in fail2ban-client status output\n"
+        unless length $jail_chunk;
+
+    $jail_chunk =~ s/\s+/ /g;  # normalize whitespace
+
+    my @raw = split /,\s*/, $jail_chunk;
+
+    # If it's one token with spaces, split by spaces too
+    if ( @raw == 1 && $raw[0] =~ /\s/ ) {
+        @raw = split /\s+/, $raw[0];
+    }
+
+    for my $j ( @raw ) {
+        $j = trim($j);
+        next unless length $j;
+        push @jails, $j;
+    }
+
+    return @jails;
+}
+
+# ==================
+# Main script logic
+# ==================
+
+print "FAIL2BAN_HOME     = $FAIL2BAN_HOME\n";
+print "JAIL_FILE         = $JAIL_FILE\n";
+print "WAIT_TIME_SECONDS = $WAIT_TIME_SECONDS\n";
+print "Mode              = " . ( !$run ? 'DRY-RUN' : 'LIVE' ) . "\n";
+print "----------------------------------------\n";
+
+my @jails = get_active_jails();
+
+if ( !@jails ) {
+    die "No active jails found in fail2ban-client status output.\n";
+}
+
+print "Active jails: " . join( ', ', @jails ) . "\n";
+print "========================================\n";
+
+# 1) Get original maxretry for each jail and set maxretry=0
+my %original_maxretry;
+my @processed_jails;
+
+for my $jail ( @jails ) {
+    print "Step 1: Preparing jail '$jail'\n";
+
+    # A. Get current maxretry (read-only even in dry-run)
+    my ( $rc_get, $out_get ) = run_cmd(
+        "fail2ban-client get $jail maxretry",
+        label     => "get maxretry",
+        read_only => 1,
+    );
+
+    if ( $rc_get != 0 ) {
+        warn "  Skipping jail '$jail' (failed to get maxretry)\n";
+        print "----------------------------------------\n";
+        next;
+    }
+
+    my $original = trim($out_get);
+
+    if ( $original !~ /^\d+$/ ) {
+        if ( $original =~ /(\d+)/ ) {
+            $original = $1;
+        } else {
+            warn "  Could not parse maxretry for '$jail' from output: '$out_get'\n";
+            warn "  Skipping this jail.\n";
+            print "----------------------------------------\n";
+            next;
+        }
+    }
+
+    $original_maxretry{$jail} = $original;
+    print "  Original maxretry: $original\n";
+
+    # B. Set maxretry to 0 (no-op in dry-run)
+    my ( $rc_set0, $out_set0 ) =
+        run_cmd("fail2ban-client set $jail maxretry 0",
+                label => "set maxretry=0");
+
+    if ( $rc_set0 != 0 ) {
+        warn "  Failed to set maxretry=0 for '$jail'; skipping this jail.\n";
+        print "----------------------------------------\n";
+        next;
+    }
+
+    push @processed_jails, $jail;
+    print "  maxretry set to 0 for '$jail'\n";
+    print "----------------------------------------\n";
+}
+
+if ( !@processed_jails ) {
+    print "No jails were successfully prepared (maxretry fetched & set to 0). Exiting.\n";
+    exit 1;
+}
+
+# 2) Reload all processed jails
+print "Step 2: Reloading all processed jails:\n";
+print "  " . join( ', ', @processed_jails ) . "\n";
+
+for my $jail ( @processed_jails ) {
+    my ( $rc_reload, $out_reload ) =
+        run_cmd("fail2ban-client reload $jail",
+                label => "reload $jail");
+
+    if ( $rc_reload != 0 ) {
+        warn "  Reload failed for jail '$jail'. Will still attempt to restore maxretry later.\n";
+    } else {
+        print "  Reloaded jail '$jail'\n";
+    }
+}
+
+# 3) Wait once for all log processing
+print "Step 3: Waiting $WAIT_TIME_SECONDS seconds for log processing...\n";
+if ( !!$run ) {
+    sleep $WAIT_TIME_SECONDS;
+} else {
+    print "  (dry-run, not sleeping)\n";
+}
+
+# 4) Restore original maxretry for all processed jails and reload each again
+print "Step 4: Restoring original maxretry values and reloading jails...\n";
+
+for my $jail ( @processed_jails ) {
+    my $orig = $original_maxretry{$jail};
+    unless ( defined $orig ) {
+        warn "  No stored original maxretry for '$jail'; skipping restore.\n";
+        next;
+    }
+
+    # Restore original maxretry
+    my ( $rc_restore, $out_restore ) =
+        run_cmd("fail2ban-client set $jail maxretry $orig",
+                label => "restore maxretry");
+
+    if ( $rc_restore != 0 ) {
+        warn "  WARNING: Failed to restore maxretry=$orig for jail '$jail'. Please check manually.\n";
+        next;
+    } else {
+        print "  Restored maxretry for '$jail' to $orig\n";
+    }
+
+    # Reload jail again after restoring maxretry
+    my ( $rc_reload2, $out_reload2 ) =
+        run_cmd("fail2ban-client reload $jail",
+                label => "reload-after-restore $jail");
+
+    if ( $rc_reload2 != 0 ) {
+        warn "  WARNING: Reload after restore failed for jail '$jail'.\n";
+    } else {
+        print "  Reloaded jail '$jail' after restoring maxretry\n";
+    }
+}
+
+print "========================================\n";
+print "All processed jails handled (set to 0, reloaded, waited, restored, reloaded again).\n";
+exit 0;
