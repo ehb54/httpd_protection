@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use JSON::PP; # Used to safely decode the list of IPs from fail2ban-client
+use JSON::PP;    # Used to safely decode JSON-like lists (for get ... banned)
 
 # --- Configuration ---
 my $F2B_CLIENT = '/usr/bin/fail2ban-client';
@@ -17,46 +17,106 @@ unless ($jail_list_line) {
     die "ERROR: Could not find the 'Jail list' in fail2ban status output. Is Fail2ban running?\n";
 }
 
-# 3. Clean and split the jail names
-#    - Remove all whitespace (tr -d ' ')
-#    - Split by comma (,)
+# 3. Split the jail names (comma separated)
 my @jails = split(/,/, $jail_list_line);
 
 print "\n--- Fail2ban Ban Report ---\n";
-print "Format: Jail Name      : Ban Count : Banned IP List\n";
+print "Format: Jail Name              : Ban Count  : Banned IP List\n";
 print "----------------------------------------------------------------\n";
+
+# Helper: try `get <jail> banip "|"`, return arrayref of IPs or undef if unsupported
+sub try_get_banip {
+    my ($jail) = @_;
+
+    # Ask fail2ban for space-free separator (|)
+    my $cmd = "$F2B_CLIENT get $jail banip \"|\" 2>&1";
+    my $output = `$cmd`;
+    my $rc = $? >> 8;
+
+    # Unsupported / invalid command?
+    return undef if $rc != 0 || $output =~ /Invalid command|NOK:/;
+
+    chomp $output;
+    return [] if $output eq '';  # supported but no bans
+
+    my @ips = grep { length } split(/\|/, $output);
+    return \@ips;
+}
+
+# Helper: try `get <jail> banned`, which may return a Python-style list string
+sub try_get_banned_list {
+    my ($jail) = @_;
+
+    my $cmd = "$F2B_CLIENT get $jail banned 2>&1";
+    my $output = `$cmd`;
+    my $rc = $? >> 8;
+
+    return undef if $rc != 0 || $output =~ /Invalid command|NOK:/;
+
+    chomp $output;
+
+    # Convert Python-like list "['1.2.3.4', '5.6.7.8']" -> JSON
+    $output =~ s/'/"/g;
+
+    my $decoded = eval { decode_json($output) };
+    return undef if $@ || ref($decoded) ne 'ARRAY';
+
+    return $decoded;
+}
+
+# Helper: fallback – parse `fail2ban-client status <jail>` output for Banned IP list
+sub parse_status_banned {
+    my ($jail) = @_;
+
+    my $cmd = "$F2B_CLIENT status $jail 2>&1";
+    my $output = `$cmd`;
+    my $rc = $? >> 8;
+
+    return () if $rc != 0;
+
+    # Typical line: `- Banned IP list:    192.0.2.1 198.51.100.1
+    my ($list) = $output =~ /Banned IP list:\s*(.*)$/m;
+    # Some older/strange variants might only have "IP list:"
+    $list //= ($output =~ /IP list:\s*(.*)$/m)[0];
+
+    return () unless defined $list && length $list;
+
+    my @ips = grep { length } split(/\s+/, $list);
+    return @ips;
+}
+
+# Unified helper: get banned IPs for a jail in a version-agnostic way
+sub get_banned_ips {
+    my ($jail) = @_;
+
+    # 1) Preferred on newer versions: get <JAIL> banip "|"
+    if (my $ref = try_get_banip($jail)) {
+        return @$ref;
+    }
+
+    # 2) Your original approach: get <JAIL> banned (Python list)
+    if (my $ref = try_get_banned_list($jail)) {
+        return @$ref;
+    }
+
+    # 3) Oldest / most portable: parse `status <JAIL>` output
+    return parse_status_banned($jail);
+}
 
 # 4. Loop through each jail name and get the banned IPs
 foreach my $jail (@jails) {
-    # Remove leading/trailing spaces and newlines
+    # Trim whitespace
     $jail =~ s/^\s+|\s+$//g;
-    
-    # Skip empty strings resulting from bad splitting
+
+    # Skip empty strings
     next unless length $jail;
 
-    # Execute the command to get banned IPs for the current jail
-    my $banned_ips_raw = `$F2B_CLIENT get $jail banned`;
-    
-    # The output is a Python list string (e.g., "['1.2.3.4', '5.6.7.8']"). 
-    # We must convert this to valid JSON for safe parsing.
-    $banned_ips_raw =~ s/'/"/g; # Replace single quotes with double quotes
-    
-    my @banned_list;
-    my $ban_count = 0;
-    
-    # Attempt to decode the JSON-like string
-    if (my $decoded = eval { decode_json($banned_ips_raw) }) {
-        if (ref $decoded eq 'ARRAY') {
-            @banned_list = @$decoded;
-            $ban_count = scalar @banned_list;
-        }
-    }
+    my @banned_list = get_banned_ips($jail);
+    my $ban_count   = scalar @banned_list;
 
-    # Format the final output line
     my $list_string = join(', ', @banned_list);
-    
-    # Print in the desired format
-    printf "%-22s : %-10s : %s\n", $jail, $ban_count, $list_string;
+
+    printf "%-22s : %-10d : %s\n", $jail, $ban_count, $list_string;
 }
 
 print "----------------------------------------------------------------\n";
