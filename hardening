@@ -18,9 +18,9 @@ my $FILES_DIR = "$REPO_ROOT/files";
 # system install locations
 my %SYSTEM_DIR = (
     'fail2ban_filter' => '/etc/fail2ban/filter.d',
-    'fail2ban_jaild' => '/etc/fail2ban/jail.d',
-    'httpd_confd'   => '/etc/httpd/conf.d',
-    'sbin'      => '/usr/sbin',
+    'fail2ban_jaild'  => '/etc/fail2ban/jail.d',
+    'httpd_confd'     => '/etc/httpd/conf.d',
+    'sbin'            => '/usr/sbin',
     );
 
 # health monitor (cron) settings

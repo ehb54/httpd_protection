@@ -1,0 +1,145 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use File::Glob 'bsd_glob';
+use File::Spec;
+use Cwd 'abs_path';
+
+# Global variables
+my $log_path = '/var/log/httpd';
+my $conf_regex = qr/#\s*use on:\s*(error_log|access_log)/i;
+my $debug = 1;
+
+# Data structure to hold aggregated results for each config file
+my %conf_totals;
+
+# --- Main Execution ---
+
+unless (@ARGV) {
+    die "Usage: $0 <conf_file_1.conf> [conf_file_2.conf ...]\n";
+}
+
+# 1. Process each configuration file provided as an argument
+foreach my $conf_file (@ARGV) {
+    print "--- Processing Configuration: $conf_file ---\n";
+
+    {
+        my $full_path;
+
+        if (-e $conf_file) {
+            # abs_path resolves the path based on the current working directory
+            # It also canonicalizes the path (resolves '..', '.')
+            $full_path = abs_path($conf_file);
+            
+            print "Original Path: $conf_file\n" if $debug;
+            print "Absolute Path: $full_path\n" if $debug;
+        } else {
+            die "$conf_file file not found\n";
+        }
+        $conf_file = $full_path;
+    }
+
+    $conf_totals{$conf_file} = {
+        lines   => 0,
+        ignored => 0,
+        matched => 0,
+        missed  => 0,
+    };
+
+    # 2. Determine the required log name from the config file
+    my $log_name = get_log_name($conf_file);
+    print "Found log type '$log_name' defined in $conf_file.\n" if $debug;
+
+    # 3. Glob the log files
+    # The glob pattern is $log_path/*$log_name (e.g., /var/log/httpd/*access_log)
+    my @log_files = bsd_glob("$log_path/*$log_name");
+
+    unless (@log_files) {
+        print "WARNING: No log files found matching pattern '$log_path/*$log_name'. Skipping $conf_file.\n";
+        next;
+    }
+
+    print "Found " . scalar(@log_files) . " log file(s) to check.\n" if $debug;
+
+    # 4. Run fail2ban-regex for each log file
+    foreach my $log_file (@log_files) {
+        print "Checking log: $log_file\n";
+
+        # Run the command and capture output (2>&1 redirects STDERR to STDOUT)
+        my $cmd = "fail2ban-regex $log_file $conf_file 2>&1";
+        my $output = `$cmd`;
+        my $exit_code = $?;
+
+        if ($exit_code != 0) {
+            die "ERROR: Command failed (Exit Code $exit_code) for $log_file.\nCommand: $cmd\nOutput:\n$output\n";
+        }
+
+        # 5. Parse the output for statistics
+        # Expected line: Lines: 3 lines, 0 ignored, 0 matched, 3 missed
+        if ($output =~ /Lines:\s*(\d+)\s*lines,\s*(\d+)\s*ignored,\s*(\d+)\s*matched,\s*(\d+)\s*missed/i) {
+            my ($lines, $ignored, $matched, $missed) = ($1, $2, $3, $4);
+
+            # Aggregate results
+            $conf_totals{$conf_file}->{lines}   += $lines;
+            $conf_totals{$conf_file}->{ignored} += $ignored;
+            $conf_totals{$conf_file}->{matched} += $matched;
+            $conf_totals{$conf_file}->{missed}  += $missed;
+
+            print "        Stats captured: Lines=$lines, Matched=$matched, Missed=$missed\n" if $debug;
+        } else {
+            # Die if the stats line is not found (this indicates an issue with fail2ban-regex output)
+            die "ERROR: Could not find statistics line in fail2ban-regex output for $conf_file against $log_file.\nOutput:\n$output\n";
+        }
+    }
+}
+
+# --- Summary ---
+
+my $fmt = "%-30s | %-10s | %-10s | %-10s | %-10s\n";
+my $break_line = '-'x90 . "\n";
+
+print $break_line;
+print sprintf( $fmt, 'conf', 'log lines', 'ignored', 'matched', 'missed', 'rate' );
+print $break_line;
+
+foreach my $conf_file (keys %conf_totals) {
+    my $t = $conf_totals{$conf_file};
+    my $match_rate = $t->{lines} > 0 ? sprintf("%.2f%%", ($t->{matched} / $t->{lines}) * 100) : "N/A";
+
+    my ($volume, $directories, $filename) = File::Spec->splitpath($conf_file);
+    print sprintf( $fmt
+                   ,$filename
+                   ,$t->{lines}
+                   ,$t->{ignored}
+                   ,$t->{missed}
+                   ,$match_rate
+        );
+}
+print "\n";
+
+
+# --- Subroutines ---
+
+# Reads the config file to find the required log name
+sub get_log_name {
+    my ($conf) = @_;
+    my $log_name;
+
+    open(my $fh, '<', $conf) or die "ERROR: Cannot open configuration file $conf: $!\n";
+
+    while (my $line = <$fh>) {
+        if ($line =~ $conf_regex) {
+            $log_name = $1;
+            last; # Found the log name, stop reading
+        }
+    }
+    close($fh);
+
+    unless ($log_name) {
+        die "ERROR: Configuration file $conf does not contain the required line:\n" .
+            "       '# use on: error_log' or '# use on: access_log'\n";
+    }
+
+    return $log_name;
+}
