@@ -1,0 +1,68 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+# Define the input and output filenames
+my $input_file = '99-hardening.local';
+my $output_file = '99-hardening.local.seconds';
+
+# Define the time unit conversions in seconds
+# 1 minute (m) = 60s
+# 1 hour (h) = 3600s
+# 1 day (d) = 86400s
+my %time_units = (
+    'm' => 60,
+    'h' => 3600,
+    'd' => 86400,
+);
+
+print "convert times to seconds in jail $input_file for old fail2ban versions less than 0.10.x\n";
+
+# Open the input file for reading
+open(my $input_fh, '<', $input_file) or die "Cannot open input file '$input_file': $!";
+
+# Open the output file for writing
+open(my $output_fh, '>', $output_file) or die "Cannot open output file '$output_file': $!";
+
+print "Converting time values in '$input_file' to seconds...\n";
+
+# Process the file line by line
+while (my $line = <$input_fh>) {
+    # Regex to find lines defining a time parameter (bantime, findtime, etc.)
+    # and capture the time value (e.g., "15m", "1h", "1d")
+    # Pattern: [word] = [number][unit]
+    # We use a non-greedy match (.*?) to keep the capture focused.
+    if ($line =~ /^(.*time\s*=\s*)(\d+)([mhd])(.*)$/i) {
+        my $prefix = $1;   # e.g., "bantime  = "
+        my $number = $2;   # e.g., "15"
+        my $unit   = $3;   # e.g., "m"
+        my $suffix = $4;   # e.g., "# comment" or ""
+
+        # Check if the unit is in our defined conversions
+        if (exists $time_units{$unit}) {
+            my $seconds = $number * $time_units{$unit};
+            
+            # Construct the new line with the time in seconds
+            my $new_line = "$prefix$seconds$suffix\n";
+            
+            # Print the original and converted line (for logging/debug)
+            print "  Converted: $line";
+            print "  To: $new_line";
+
+            # Write the converted line to the output file
+            print $output_fh $new_line;
+            next; # Go to the next line
+        }
+    }
+    
+    # If the line doesn't match the time pattern, or the unit isn't recognized,
+    # write the original line to the output file
+    print $output_fh $line;
+}
+
+# Close the file handles
+close($input_fh);
+close($output_fh);
+
+print "Conversion complete. The output is saved to '$output_file'.\n";
