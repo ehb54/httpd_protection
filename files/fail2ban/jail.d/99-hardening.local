@@ -35,7 +35,7 @@ bantime  = 48h
 [apache-weird-http]
 enabled  = true
 filter   = apache-weird-http
-logpath  = /var/log/httpd/access_log
+logpath  = /var/log/httpd/*access_log
 maxretry = 3
 findtime = 5m
 bantime  = 12h
@@ -59,10 +59,18 @@ bantime  = 24h
 [apache-many-4xx]
 enabled  = true
 filter   = apache-many-4xx
-logpath  = /var/log/httpd/access_log
+logpath  = /var/log/httpd/*access_log
 maxretry = 30
 findtime = 5m
 bantime  = 6h
+
+[apache-us3-gridctl]
+enabled  = true
+filter   = apache-us3-gridctl
+logpath  = /var/log/httpd/*access_log
+maxretry = 5
+findtime = 5m
+bantime  = 24h
 
 # ---------- Stock Apache jails ----------
 [apache-badbots]
